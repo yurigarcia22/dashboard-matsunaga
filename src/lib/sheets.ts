@@ -30,9 +30,13 @@ export interface DashboardData {
 
 function parseDate(raw: string): Date {
   if (!raw) return new Date(0)
-  const [datePart, timePart] = raw.split(', ')
+  // Suporta "DD/MM/YYYY, HH:MM:SS" (leads) e "DD/MM/YYYY HH:MM:SS" (Kiwify)
+  const sep = raw.includes(', ') ? ', ' : ' '
+  const [datePart, timePart] = raw.split(sep)
   if (!datePart) return new Date(0)
-  const [day, month, year] = datePart.split('/')
+  const parts = datePart.split('/')
+  if (parts.length !== 3) return new Date(0)
+  const [day, month, year] = parts
   const timeStr = timePart || '00:00:00'
   return new Date(`${year}-${month}-${day}T${timeStr}`)
 }
