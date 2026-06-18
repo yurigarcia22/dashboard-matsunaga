@@ -1,17 +1,17 @@
 import { NextResponse } from 'next/server'
-import { fetchLeads } from '@/lib/sheets'
+import { fetchLeads, fetchVendas } from '@/lib/sheets'
 
 export const runtime = 'nodejs'
 
 export async function GET() {
   try {
-    const leads = await fetchLeads()
+    const [leads, vendas] = await Promise.all([fetchLeads(), fetchVendas()])
     return NextResponse.json(
-      { leads, fetchedAt: new Date().toISOString() },
+      { leads, vendas, fetchedAt: new Date().toISOString() },
       { headers: { 'Cache-Control': 'no-store' } }
     )
   } catch (err) {
-    console.error('Erro ao buscar leads:', err)
+    console.error('Erro ao buscar dados:', err)
     return NextResponse.json({ error: 'Erro ao buscar dados' }, { status: 500 })
   }
 }

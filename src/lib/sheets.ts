@@ -1,5 +1,6 @@
 const SPREADSHEET_ID = '1l5UcSQpfZoVJ2ozz_4a6fRjEQdi33O5O-3f9SgP9NmY'
-const LEADS_GID = '1703058783' // aba "Leads Consulta"
+const LEADS_GID = '1703058783'   // aba "Leads Consulta"
+const VENDAS_GID = '2017298324'  // aba "Vendas Kiwify"
 
 export interface Lead {
   id: string
@@ -89,23 +90,10 @@ function parseGvizDate(cell: GvizCell | null | undefined): Date {
   return new Date(0)
 }
 
-// Opção 2: gviz API (planilha precisa ser pública - "Qualquer pessoa com o link")
-async function fetchViaGviz(): Promise<Lead[]> {
-  const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:json&gid=${LEADS_GID}`
-  const res = await fetch(url, { next: { revalidate: 300 } })
-  if (!res.ok) throw new Error(`gviz retornou ${res.status}`)
-  const text = await res.text()
-  const start = text.indexOf('setResponse(')
-  if (start === -1) throw new Error('Resposta gviz inválida')
-  const jsonStr = text.substring(start + 'setResponse('.length, text.lastIndexOf(')'))
-  const json = JSON.parse(jsonStr)
-
-  const rows: { c?: (GvizCell | null)[] }[] = json?.table?.rows ?? []
+function rowsToLeads(rows: { c?: (GvizCell | null)[] }[]): Lead[] {
   const leads: Lead[] = []
-
   for (const row of rows) {
     const cells = row.c ?? []
-    // Usa 'f' (valor formatado) quando disponível, senão 'v' (valor bruto)
     const getStr = (i: number) => {
       const cell = cells[i]
       if (!cell) return ''
@@ -113,7 +101,6 @@ async function fetchViaGviz(): Promise<Lead[]> {
     }
     const idRaw = getStr(0)
     if (!/^\d{7,10}$/.test(idRaw)) continue
-
     leads.push({
       id: idRaw,
       nome: getStr(1),
@@ -127,16 +114,109 @@ async function fetchViaGviz(): Promise<Lead[]> {
       utmCampaign: getStr(9),
     })
   }
-
   return leads
+}
+
+// Opção 2: gviz API com paginação automática (planilha pública)
+async function fetchViaGviz(): Promise<Lead[]> {
+  const PAGE = 1000
+  let allLeads: Lead[] = []
+  let offset = 0
+
+  while (true) {
+    const tq = encodeURIComponent(`select A,B,C,D,E,F,G,H,I,J limit ${PAGE} offset ${offset}`)
+    const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:json&gid=${LEADS_GID}&headers=1&tq=${tq}`
+    const res = await fetch(url, { cache: 'no-store' })
+    if (!res.ok) break
+    const text = await res.text()
+    const start = text.indexOf('setResponse(')
+    if (start === -1) break
+    const jsonStr = text.substring(start + 'setResponse('.length, text.lastIndexOf(')'))
+    const json = JSON.parse(jsonStr)
+    const rows: { c?: (GvizCell | null)[] }[] = json?.table?.rows ?? []
+    const batch = rowsToLeads(rows)
+    allLeads = allLeads.concat(batch)
+    // Para quando receber menos de PAGE linhas
+    if (rows.length < PAGE) break
+    offset += PAGE
+    // Limite de segurança: 10 páginas = 10.000 leads
+    if (offset >= 10000) break
+  }
+
+  return allLeads
 }
 
 export async function fetchLeads(): Promise<Lead[]> {
   const appsScriptUrl = process.env.APPS_SCRIPT_URL
-  if (appsScriptUrl) {
-    return fetchViaAppsScript(appsScriptUrl)
-  }
+  if (appsScriptUrl) return fetchViaAppsScript(appsScriptUrl)
   return fetchViaGviz()
+}
+
+// ---- Kiwify Sales ----
+
+export interface Venda {
+  data: Date
+  campanha: string
+  conjunto: string
+  criativo: string
+  valor: number
+  cupom: string
+  origem: string
+  produto: string
+  cliente: string
+  status: string
+}
+
+async function parseGvizSheet(gid: string): Promise<{ c?: (GvizCell | null)[] }[]> {
+  const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:json&gid=${gid}`
+  const res = await fetch(url, { next: { revalidate: 300 } })
+  if (!res.ok) throw new Error(`gviz retornou ${res.status} para gid=${gid}`)
+  const text = await res.text()
+  const start = text.indexOf('setResponse(')
+  if (start === -1) throw new Error('Resposta gviz inválida')
+  const jsonStr = text.substring(start + 'setResponse('.length, text.lastIndexOf(')'))
+  const json = JSON.parse(jsonStr)
+  return json?.table?.rows ?? []
+}
+
+export async function fetchVendas(): Promise<Venda[]> {
+  const rows = await parseGvizSheet(VENDAS_GID)
+  const vendas: Venda[] = []
+
+  for (const row of rows) {
+    const cells = row.c ?? []
+    const getStr = (i: number) => {
+      const cell = cells[i]
+      if (!cell) return ''
+      return String(cell.f ?? cell.v ?? '').trim()
+    }
+    const getNum = (i: number) => {
+      const cell = cells[i]
+      if (!cell || cell.v == null) return 0
+      return typeof cell.v === 'number' ? cell.v : parseFloat(String(cell.v)) || 0
+    }
+
+    const dataRaw = getStr(0)
+    if (!dataRaw) continue
+
+    const status = getStr(11).toLowerCase()
+    if (status && status !== 'paid' && status !== 'complete' && status !== 'approved') continue
+
+    vendas.push({
+      data: parseDate(dataRaw),
+      campanha: getStr(1),
+      conjunto: getStr(2),
+      criativo: getStr(3),
+      valor: getNum(4),
+      cupom: getStr(5),
+      origem: getStr(7),
+      produto: getStr(8),
+      cliente: getStr(9),
+      status: getStr(11),
+    })
+  }
+
+  return vendas
 }
 
 export function buildDashboardData(leads: Lead[]): DashboardData {
